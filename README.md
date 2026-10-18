@@ -706,3 +706,672 @@ Pada lingkungan virtualisasi container (khususnya Docker di GNS3), proses contai
    * Jalankan `cat /root/nomer10_verifikasi.log` pada tengen untuk melihat tabel hasil audit pasca restart.
    * Seluruh 8 klien (itadori, fushiguro, zenin, okkotsu, ino, kusakabe, miwa, kugisaki) berstatus **SESUAI**, tidak ada tabrakan IP, dan seluruh kebijakan pool bertahan secara konsisten.
    ![Log Rekapitulasi Hasil Verifikasi Soal 10 Pasca Restart](assets/soal10_rekapitulasi_log.png)
+---
+11. Utahime dan Shoko ditugaskan membangun sistem penamaan domain resmi agar seluruh pos tidak perlu menghafal alamat IP mentah. Konfigurasikan BIND9 pada utahime sebagai DNS Master dan shoko sebagai DNS Slave untuk mengelola domain jujutsu.<xxxx>.com. Atur SOA record, NS delegasi untuk kedua server, dan terapkan allow-transfer dari Master ke Slave. Pastikan file zona berhasil tersinkronisasi otomatis ke shoko saat nomor serial di utahime dinaikkan, lalu buktikan dengan melakukan query dig ke kedua server dari salah satu client.
+
+Disini jalankan instalasi untuk BIND9-nya terlebih dahulu pada kedua node yaitu utahime dan shoko.
+
+```
+apt-get update
+apt-get install -y bind9 bind9utils bind9-doc dnsutils
+```
+Kemudian buat direktori baru untuk menyimpan file zona agar nantinya bisa digunakan untuk konfigurasi SOA (Start of Authority) record dan NS (Nameserver) delegasi pada node utahime.
+
+```
+mkdir -p /etc/bind/jujutsu
+```
+Setelah itu konfigurasikan zona master dan allow-transfer ke direktori `/etc/bind/named.conf.local` di node utahime.
+```
+zone "jujutsu.k24.com" {
+    type master;
+    file "/etc/bind/jujutsu/jujutsu.k24.com";
+    allow-transfer { 192.223.1.3; };
+};
+```
+Kemudian konfigurasikan zona slave di direktori `/etc/bind/named.conf.local` di node shoko.
+```
+zone "jujutsu.k24.com" {
+    type slave;
+    file "/var/lib/bind/jujutsu.k24.com";
+    masters { 192.223.1.2; };
+};
+```
+Kemudian buat file zonenya dengan mengonfigurasikan SOA dan NS delegasinya ke direktori `/etc/bind/jujutsu/jujutsu.k24.com` di node utahime.
+```
+$TTL    604800
+@       IN      SOA     utahime.jujutsu.k24.com. admin.jujutsu.k24.com. (
+                              2026101501 ; Serial
+                                  604800 ; Refresh
+                                   86400 ; Retry
+                                 2419200 ; Expire
+                                  604800 ) ; Negative Cache TTL
+;
+; Name Server Delegations
+@       IN      NS      utahime.jujutsu.k24.com.
+@       IN      NS      shoko.jujutsu.k24.com.
+
+; A Records untuk Name Servers
+utahime IN      A       192.223.1.2
+shoko   IN      A       192.223.1.3
+```
+Setelah konfigurasi dibuat maka service named direstart dengan `service named restart`.
+
+Untuk buktinya adalah sebagai berikut:
+
+yang ini adalah pencarian server utahime.
+![alt](assets/nomer11_utahime.png)
+
+yang ini adalah pencarian server shoko.
+![alt](assets/nomer11_shoko.png)
+
+**notes: untuk penggunaan command bisa menggunakan `dig <@IP> <domain> A` untuk mencari host sesuai pemilik IP yang dicari.*
+
+12. Peta domain harus memetakan pintu masuk utama dan tetap bisa mencari alamat di luar kawasan Shibuya. Pada utahime, buat A record jujutsu.<xxxx>.com yang mengarah ke gojo, serta CNAME www yang merujuk ke domain utama tersebut. Buat pula Reverse DNS (zona PTR) untuk melacak IP gojo kembali ke domain resminya, dan aktifkan fitur DNS Forwarder pada BIND9 mengarah ke IP gateway internet (192.168.122.1). Uji dari client dengan dig untuk mengecek CNAME, PTR, dan buktikan client tetap bisa melakukan ping ke domain internet seperti google.com.
+
+Pertama lakukan konfigurasi DNS forwader di direktori `/etc/bind/named.conf.options`.
+
+```
+options {
+        directory "/var/cache/bind";
+        forwarders {
+                192.168.122.1;
+        };
+        forward only;
+        dnssec-validation auto;
+        listen-on-v6 { any; };
+};
+```
+Kemudian tambahkan A record dan CNAME pada file zone utama yang mengarah ke node gojo.
+```
+echo "jujutsu.k24.com. IN A 192.223.1.4" >> /etc/bind/jujutsu/jujutsu.k24.com
+echo "www IN CNAME jujutsu.k24.com." >> /etc/bind/jujutsu/jujutsu.k24.com
+```
+Setelah itu, buat konfigurasi reverse zone di direktori `/etc/bind/named.conf.local`.
+```
+zone "1.223.192.in-addr.arpa" {
+    type master;
+    file "/etc/bind/jujutsu/1.223.192.rev";
+    allow-transfer { 192.223.1.3; };
+};
+```
+Terakhir, buat file reverse zone untuk IP gojo.
+```
+$TTL    604800
+@       IN      SOA     utahime.jujutsu.k24.com. admin.jujutsu.k24.com. (
+                              2026101503 ; Serial
+                                  604800 ; Refresh
+                                   86400 ; Retry
+                                 2419200 ; Expire
+                                  604800 ) ; Negative Cache TTL
+;
+@       IN      NS      utahime.jujutsu.k24.com.
+@       IN      NS      shoko.jujutsu.k24.com.
+
+4       IN      PTR     jujutsu.k24.com.
+```
+Setelah semuanya terkonfigurasi, restart layanan named dengan `service named restart`.
+
+Untuk buktinya adalah sebagai berikut:
+
+yang ini adalah pencarian domain www.jujutsu.k24.com.
+![alt](assets/nomer12_gojo.png)
+
+yang ini adalah pencarian reverse zone pada IP gojo.
+![alt](assets/nomer12_reversezone.png)
+
+13. Kepala Sekolah Yaga dan Inumaki mendirikan database terpusat yang redundan agar log aktivitas kutukan tetap aman tersimpan. Konfigurasikan MariaDB pada yaga sebagai DB-Master dan inumaki sebagai DB-Slave. Buat database db_shibuya_<xxxx> beserta tabel request_logs di Master, aktifkan binary logging (log-bin, server-id), lalu hubungkan inumaki sebagai Slave yang menyalin data secara realtime dengan CHANGE MASTER TO. Berikan hak akses remote bagi seluruh node di Network 4, lalu buktikan replikasi berhasil dengan memasukkan data baru di Master dan memeriksa hasilnya di Slave.
+
+Pertama-tama install terlebih dahulu mariadb di kedua node yaitu yaga dan inumaki.
+```
+apt-get update
+apt-get install -y mariadb-server
+```
+Kemudian di node yaga, buat file konfigurasi khusus untuk pengaturan master di direktori `/etc/mysql/mariadb.conf.d/99-master.cnf`.
+```
+[mysqld]
+bind-address = 0.0.0.0
+server-id = 1
+log_bin = /var/log/mysql/mysql-bin.log
+```
+Jangan lupa memastikan direktor log tersedia dengan kepemilikan user mysql.
+```
+mkdir -p /var/log/mysql
+chown -R mysql:mysql /var/log/mysql
+``` 
+Setelah semua konfigurasi selesai restart dengan `service mariadb restart`.
+
+Kemudian di node inumaki, buat file konfigurasi khusus untuk slave pada direktori `/etc/mysql/mariadb.conf.d/99-slave.cnf`.
+```
+[mysqld]
+bind-address = 0.0.0.0
+server-id = 2
+```
+Kemudian restart layanan mariadb dengan `service mariadb restart`.
+
+Kembali ke node yaga, masuk ke database dengan `mysql -u root`.
+
+Selanjutnya buat query sebagai berikut:
+```
+CREATE DATABASE IF NOT EXISTS db_shibuya_k24;
+USE db_shibuya_k24;
+
+-- Membuat tabel request_logs
+CREATE TABLE IF NOT EXISTS request_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    client_ip VARCHAR(50) NOT NULL,
+    request_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Membuat user untuk replikasi Slave
+CREATE USER IF NOT EXISTS 'replica_user'@'%' IDENTIFIED BY 'Jujutsu2026';
+GRANT REPLICATION SLAVE ON *.* TO 'replica_user'@'%';
+
+-- Memberikan hak akses remote bagi seluruh node di Network 4
+CREATE USER IF NOT EXISTS 'worker'@'192.223.4.%' IDENTIFIED BY 'Worker2026';
+GRANT ALL PRIVILEGES ON db_shibuya_k24.* TO 'worker'@'192.223.4.%';
+
+FLUSH PRIVILEGES;
+```
+Kemudian jalankan query `SHOW MASTER STATUS` untuk mendapatkan nilai dari kolom file dan posisinya untuk dimasukkan nilainya saat mengonfigurasi server slave (inumaki).
+![alt](assets/nomer13_showmasterstatus.png)
+**notes: nilai dari kolom file dan position biasanya random jadi sesuaikan dengan nilai yang ada di dbmaster.*
+
+Selanjutnya pindah ke node inumaki. Masuk ke dalam database dengan `mysql -u root`. Kemudian masukkan query berikut:
+```
+STOP SLAVE;
+CHANGE MASTER TO
+    MASTER_HOST='192.223.4.8',
+    MASTER_USER='replica_user',
+    MASTER_PASSWORD='Jujutsu2026',
+    MASTER_LOG_FILE='mysql-bin.000001',
+    MASTER_LOG_POS=1698;
+START SLAVE;
+```
+![alt](assets/nomer13_chmasterto.png)
+
+Untuk uji coba apakah node inumaki sudah bisa menyalin data dari node yaga maka kita lakukan query berikut di node yaga:
+```
+USE db_shibuya_k24;
+INSERT INTO request_logs (client_ip) VALUES ('192.223.2.15');
+```
+![alt](assets/nomer13_insert%20data%20dummy.png)
+
+Kemudian cek hasilnya di node inumaki:
+```
+USE db_shibuya_k24;
+SELECT * FROM request_logs;
+```
+![alt](assets/nomer13_data%20tersalin.png)
+Bisa dilihat kalau node inumaki berhasil mereplikasi data yang ada pada node yaga.
+
+14. Para penyihir lapangan bersiaga di Data Center sebagai pekerja backend untuk memproses aplikasi. Pasang Nginx dan PHP-FPM pada maki dan panda untuk menyajikan web frontend yang menampilkan hostname masing-masing. Pada nanami, todo, dan kirara, siapkan layanan API yang mencatat log request ke database yaga. Konfigurasikan virtual host agar worker merespons domain layanan yang ditentukan. Batasi akses langsung dari klien ke worker, web worker hanya menerima trafik melalui jalur proxy web yang ditentukan, sedangkan worker API hanya menerima trafik melalui geto. Uji bahwa akses langsung dari klien ditolak, sementara akses melalui reverse proxy tetap berhasil.
+
+Pertama, lakukan instalasi Nginx dan PHP-FPM pada node maki dan panda.
+```
+apt-get update
+apt-get install -y nginx php-fpm
+```
+Kemudian pastikan server PHP_FPM sudah aktif.
+```
+PHP_SERVICE=$(ls /etc/init.d/ | grep php | head -n 1)
+service $PHP_SERVICE restart
+```
+Selanjutnya buat file index.php baru di direktori `/var/www/html/index.php`.
+```
+<?php
+echo "Frontend Worker: " . gethostname() . "\n";
+?>
+```
+Jangan lupa cek apakah socket PHP-FPM sudah jalan atau belum.
+```
+PHP_SOCK=$(find /run/php/ -name "*.sock" | head -n 1)
+```
+Selanjutnya buat konfigurasi Nginx baru yang hanya mengarahkan ke index.php pada direktori `/etc/nginx/sites-available/jujutsu-frontend`.
+```
+server {
+    listen 80;
+    server_name jujutsu.k24.com www.jujutsu.k24.com;
+
+    root /var/www/html;
+    index index.php;
+
+    allow 192.223.1.4;
+    deny all;
+
+    location / {
+        try_files \$uri \$uri/ /index.php\$is_args\$args;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:$PHP_SOCK;
+    }
+}
+```
+Lakukan semua konfigurasi pada kedua node maki dan panda.
+Setelah semuanya selesai restart layanan dengan `service nginx restart`.
+
+Sekarang beralih ke node nanami, todo, dan kirara. Lakukan instalasi Nginx, PHP-FPM dan PHP-mysql di ketiga node tersebut yaitu nanami, todo, dan kirara.
+```
+apt-get update
+apt-get install -y nginx php-fpm php-mysql
+```
+Pastikan server PHP-FPM sudah aktif.
+```
+PHP_SERVICE=$(ls /etc/init.d/ | grep php | head -n 1)
+service $PHP_SERVICE restart
+```
+Kemudian buat file konfigurasi mysql di direktori `/var/www/api/index.php`.
+```
+<?php
+$db_host = "192.223.4.8";
+$db_user = "worker";
+$db_pass = "Worker2026";
+$db_name = "db_shibuya_k24";
+
+$client_ip = isset($_SERVER['HTTP_X_REAL_IP']) ? $_SERVER['HTTP_X_REAL_IP'] :
+            (isset($_SERVER['HTTP_X_FORWARDED_FOR']) ? $_SERVER['HTTP_X_FORWARDED_FOR'] : $_SERVER['REMOTE_ADDR']);
+
+$conn = new mysqli($db_host, $db_user, $db_pass, $db_name);
+if (!$conn->connect_error) {
+    $stmt = $conn->prepare("INSERT INTO request_logs (client_ip) VALUES (?)");
+    $stmt->bind_param("s", $client_ip);
+    $stmt->execute();
+    $stmt->close();
+    $conn->close();
+}
+
+header('Content-Type: application/json');
+echo json_encode([
+    "status" => "success",
+    "worker" => gethostname(),
+    "client_ip" => $client_ip
+]) . "\n";
+?>
+```
+Jangan lupa cek apakah socket PHP-FPM sudah jalan atau belum.
+```
+PHP_SOCK=$(find /run/php/ -name "*.sock" | head -n 1)
+```
+Selanjutnya buat konfigurasi Nginx API yang baru pada direktori `/etc/nginx/sites-available/jujutsu-api`.
+```
+server {
+    listen 80;
+    server_name jujutsu.k24.com;
+
+    root /var/www/api;
+    index index.php;
+
+    allow 192.223.4.2;
+    deny all;
+
+    location / {
+        try_files \$uri \$uri/ /index.php\$is_args\$args;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:$PHP_SOCK;
+    }
+}
+```
+Lakukan semua konfigurasi pada ketiga node nanami, todo, kirara.
+Setelah semuanya selesai restart layanan dengan `service nginx restart`.
+
+Untuk buktinya sebagai berikut:
+
+yang ini ketika server diakses dari klien.
+![alt](assets/nomer14_forbidden.png)
+
+yang ini ketika server diakses melalui gojo.
+![alt](assets/nomer14_maki.png)
+
+yang ini ketika server diakses melalui geto.
+![alt](assets/nomer14_nanami.png)
+
+15. Geto bertugas mengendalikan pembagian beban request API di internal Data Center agar server tidak tumbang bersamaan. Konfigurasikan Nginx pada geto sebagai Load Balancer internal dengan upstream api_cluster yang mengarahkan trafik ke nanami dan todo. Terapkan algoritma Weighted Round Robin dengan bobot 3:1, di mana nanami menerima porsi beban tiga kali lebih banyak daripada todo. Buktikan distribusi beban ini dengan melakukan loop request berulang kali ke geto dari jaringan lokal Data Center dan periksa rasio responnya.
+
+Pertama lakukan instalasi Nginx pada node geto.
+```
+apt-get update
+apt-get install -y nginx
+```
+Selanjutnya konfigurasikan load balancer Nginx ke direktori `/etc/nginx/sites-available/api-lb`.
+```
+upstream api_cluster {
+    server 192.223.4.5:80 weight=3; # nanami
+    server 192.223.4.6:80 weight=1; # todo
+}
+
+server {
+    listen 80;
+    server_name jujutsu.k24.com;
+
+    location / {
+        proxy_pass http://api_cluster;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+Setelah dikonfigurasi, restart layanan dengan `service nginx restart`.
+
+Untuk buktinya sebagai berikut:
+![alt](assets/nomer15_load%20balancer.png)
+
+16. Gojo berdiri di perbatasan DMZ sebagai gerbang publik tunggal bagi seluruh client dari luar maupun dalam. Konfigurasikan Nginx pada gojo untuk melayani domain jujutsu.<xxxx>.com dan www.jujutsu.<xxxx>.com menggunakan metode Path-Based Routing. Atur agar request root (/) diteruskan secara Round Robin ke worker frontend (maki dan panda), sedangkan request ke path /api diteruskan langsung ke geto. Uji dari client Divisi A atau B bahwa akses ke web utama dibalas oleh Maki/Panda, sedangkan akses ke /api diteruskan dan dijawab oleh Nanami/Todo.
+
+Pertama lakukan instalasi Nginx di node gojo.
+```
+apt-get update
+apt-get install -y nginx
+```
+Kemudian buat konfigurasi untuk web worker yang meneruskan request root secara round robin ke worker frontend, sedangkan request ke path /api diteruskan ke geto. Taruh konfigurasi di direktori `/etc/nginx/sites-available/jujutsu-public`.
+```
+upstream web_frontend {
+    server 192.223.4.3:80; # maki
+    server 192.223.4.4:80; # panda
+}
+
+upstream api_gateway {
+    server 192.223.4.2:80; # geto
+}
+
+server {
+    listen 80;
+    server_name jujutsu.k24.com www.jujutsu.k24.com;
+
+    # Routing ke Frontend (Root /)
+    location / {
+        proxy_pass http://web_frontend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # Routing ke API (/api)
+    location /api {
+        proxy_pass http://api_gateway/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+Setelah semua terkonfigurasi lakukan restart layanan dengan `service nginx restart`.
+
+Pastikan node klien di network 2 atau 3 sudah connect ke IP utahime.
+```
+echo "nameserver 192.223.1.2" > /etc/resolv.conf
+```
+
+Uji coba dengan command
+```
+for i in {1..4}; do curl http://jujutsu.k24.com/; done
+
+curl http://jujutsu.k24.com/api
+```
+bukti:
+![alt](assets/nomer16.png)
+
+17. Komando pusat perlu mengetahui IP asli klien yang mengirimkan request tanpa tertukar dengan IP proxy perantara. Konfigurasikan gojo dan geto agar meneruskan informasi alamat klien melalui header X-Real-IP dan X-Forwarded-For. Pastikan geto hanya mempercayai informasi alamat klien yang diterima dari proxy terpercaya, dan skrip API menyimpan alamat klien yang telah diverifikasi ke kolom client_ip pada tabel request_logs di database yaga. Uji dengan mengirimkan request dari klien Network 2 dan Network 3 ke endpoint /api, kemudian periksa database untuk memastikan alamat yang tercatat sesuai dengan IP klien asal, bukan IP gojo atau geto.
+
+Pertama masukkan script berikut di node geto:
+```
+#!/bin/bash
+
+cat << 'EOF' > /etc/nginx/sites-available/api-lb
+upstream api_cluster {
+    server 192.223.4.5:80 weight=3; # nanami
+    server 192.223.4.6:80 weight=1; # todo
+}
+
+server {
+    listen 80;
+    server_name jujutsu.k24.com;
+
+    # Mempercayai header IP dari public reverse proxy (gojo)
+    set_real_ip_from 192.223.1.4;
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+
+    location / {
+        proxy_pass http://api_cluster;
+        proxy_set_header Host $host;
+        # $remote_addr sekarang berisi IP asli klien berkat real_ip_header
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+EOF
+
+# Restart Nginx untuk menerapkan pengaturan baru
+service nginx restart
+```
+
+Uji coba dengan command
+```
+# Di node fushiguro
+curl http://jujutsu.k24.com/api
+
+# Di node yaga
+mysql -u root
+USE db_shibuya_k24; SELECT * FROM request_logs;
+```
+
+Bukti:
+![alt](assets/nomer17_curl.png)
+![alt](assets/nomer17_isi%20db.png)
+
+18. nanami dan todo merupakan worker API utama, sedangkan kirara disiapkan sebagai worker cadangan. Konfigurasikan upstream api_cluster pada geto agar kirara menjadi server backup, serta terapkan passive health check dengan parameter max_fails=2 dan fail_timeout=5s pada worker API utama. Pastikan kirara menjalankan layanan API yang kompatibel dengan endpoint utama. Simulasikan gangguan dengan menghentikan layanan Nginx atau layanan API pada nanami dan todo. Buktikan dari klien bahwa request ke /api dialihkan ke kirara dan menghasilkan respons API yang valid tanpa error 502 Bad Gateway.
+
+Pertama masukkan script berikut di node geto:
+```
+#!/bin/bash
+
+cat << 'EOF' > /etc/nginx/sites-available/api-lb
+upstream api_cluster {
+    server 192.223.4.5:80 weight=3 max_fails=2 fail_timeout=5s; # nanami (Utama)
+    server 192.223.4.6:80 weight=1 max_fails=2 fail_timeout=5s; # todo (Utama)
+    server 192.223.4.7:80 backup;                              # kirara (Cadangan)
+}
+
+server {
+    listen 80;
+    server_name jujutsu.k24.com;
+
+    set_real_ip_from 192.223.1.4;
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+
+    location / {
+        proxy_pass http://api_cluster;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+EOF
+
+# Restart Nginx
+service nginx restart
+```
+
+Uji coba dengan command
+```
+# matikan layanan di kedua node nanami dan todo
+service nginx stop
+
+# Di node klien
+curl http://jujutsu.k24.com/api
+```
+
+Bukti:
+![alt](assets/nomer18_uji%20kirara.png)
+
+19. gojo bertugas mengoptimalkan layanan web sekaligus membatasi request berlebihan. Konfigurasikan Nginx Proxy Caching untuk halaman web frontend dengan masa berlaku cache 10 menit dan tambahkan header X-Cache-Status. Terapkan rate limiting pada path /api dengan batas 10 request per detik per IP klien. Buktikan bahwa request ke halaman web yang memenuhi syarat cache menghasilkan status MISS pada akses awal dan HIT pada akses berikutnya. Uji rate limiting secara terpisah dengan mengirimkan request beruntun ke /api, kemudian catat status respons yang dihasilkan ketika batas terlampaui.
+
+Pertama masukkan script berikut di node gojo:
+```
+#!/bin/bash
+apt-get update
+apt-get install -y nginx
+
+# Membuat direktori penyimpanan cache Nginx
+mkdir -p /var/cache/nginx/jujutsu
+
+cat << 'EOF' > /etc/nginx/sites-available/jujutsu-public
+# Definisi Proxy Cache: zone web_cache dengan masa aktif 10m
+proxy_cache_path /var/cache/nginx/jujutsu levels=1:2 keys_zone=web_cache:10m max_size=100m inactive=10m use_temp_path=off;
+
+# Definisi Rate Limiting: 10 request per detik per IP klien
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+
+upstream web_frontend {
+    server 192.223.4.3:80; # maki
+    server 192.223.4.4:80; # panda
+}
+
+upstream api_gateway {
+    server 192.223.4.2:80; # geto
+}
+
+server {
+    listen 80;
+    server_name jujutsu.k24.com www.jujutsu.k24.com;
+
+    # Menambahkan header X-Cache-Status untuk pemantauan cache
+    add_header X-Cache-Status $upstream_cache_status;
+
+    # 1. Routing Frontend (Root /) dengan Proxy Caching
+    location / {
+        proxy_pass http://web_frontend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # Konfigurasi Cache 10 Menit
+        proxy_cache web_cache;
+        proxy_cache_valid 200 10m;
+        proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
+    }
+
+    # 2. Routing API (/api) dengan Rate Limiting 10r/s
+    location /api {
+        # Menerapkan aturan Rate Limit
+        limit_req zone=api_limit nodelay;
+
+        proxy_pass http://api_gateway/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+EOF
+
+# Aktifkan konfigurasi
+ln -sf /etc/nginx/sites-available/jujutsu-public /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+
+# Restart Nginx
+service nginx restart
+```
+
+Uji coba dengan command
+```
+# Di node fushiguro
+curl -I http://jujutsu.k24.com/
+
+# akses kedua setelah miss
+curl -I http://jujutsu.k24.com/
+
+# pengujian rate limiting
+for i in {1..20}; do curl -s -o /dev/null -w "%{http_code}\n" http://jujutsu.k24.com/api; done
+```
+
+Bukti:
+![alt](assets/nomer19_ujicoba.png)
+![alt](assets/nomer19_hasil%20cache.png)
+
+20. Sebelum Curtain di Shibuya resmi dibuka, Kusakabe memimpin audit untuk menguji kapasitas layanan. Dari terminal kusakabe, jalankan benchmark menggunakan Apache Benchmark dengan parameter -n 600 -c 30 menuju http://jujutsu.<xxxx>.com/. Catat Requests per Second (RPS), latensi, dan jumlah request yang gagal. Lakukan pengujian tambahan pada endpoint /api untuk mengamati efek rate limiting. Bandingkan hasil pengujian baseline dengan hasil ketika rate limiting aktif, serta gunakan access log gojo untuk membedakan kegagalan aplikasi, koneksi, dan request yang ditolak oleh kebijakan rate limit.
+
+Pertama lakukan instalasi dengan command berikut:
+```
+apk update
+apk add apache2-utils
+```
+
+Uji coba dengan command
+```
+ab -n 600 -c 30 http://jujutsu.k24.com/
+
+ab -n 600 -c 30 http://jujutsu.k24.com/api
+
+# Memeriksa jumlah request yang ditolak Rate Limit (HTTP 503):
+grep " 503 " /var/log/nginx/access.log | wc -l
+
+# Memeriksa detail pesan penolakan Rate Limit pada Error Log:
+tail -n 20 /var/log/nginx/error.log
+
+# Memeriksa respon sukses dari Cache vs API:
+tail -n 50 /var/log/nginx/access.log
+```
+Bukti:
+![alt](assets/nomer20%20tanpa%20api.png)
+![alt](assets/nomer20%20.png)
+![alt](assets/nomer20%20dengan%20api.png)
+
+### REVISI
+
+13. Terdapat kesalahan penulisan query pada node yaga sehingga menyebabkan tidak bisa menginput nilai ke tabel.
+```
+INSERT INTO request_logs (client_ip) VALUES ('192.223.2.3');
+```
+Seharusnya ada penambahan simbol petik (') saat menginput nilai di penulisan query.
+
+Kemudian pada node inumaki seharusnya dibuat dulu databasenya
+```
+CREATE DATABASE IF NOT EXISTS db_shibuya_k24;
+USE db_shibuya_k24;
+CREATE TABLE IF NOT EXISTS request_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    client_ip VARCHAR(50) NOT NULL,
+    request_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+); 
+```
+baru melakukan query berikut:
+```
+STOP SLAVE;
+CHANGE MASTER TO
+   MASTER_HOST='192.223.4.8',
+    MASTER_USER='replica_user',
+    MASTER_PASSWORD='Jujutsu2026',
+    MASTER_LOG_FILE='<sesuaikan nilainya>',
+    MASTER_LOG_POS=<sesuaikan nilainya>;
+START SLAVE;
+```
+Kalau database tidak dibuat, maka akan terjadi error database unknown saat percobaan pembuktian replikasi data.
+
+Setelah diperbaiki:
+![alt](assets/revisi%20no%2013.png)
+
+16. Karena waktu demo tidak ada hasilnya maka ini adalah hasilnya
+
+![alt](assets/nomer16.png)
+
+19. Karena waktu demo tidak ada hasilnya maka ini adalah hasilnya
+
+![alt](assets/nomer19_ujicoba.png)
+![alt](assets/nomer19_hasil%20cache.png)
+
+Terakhir, waktu demo ada kesalahan penulisan konfigurasi penggunaan command
+```
+curl http://jujutsu.k24.com/api
+```
+yang menyebabkan tidak bisa dibuka karena tak bisa menemukan DNS service.
+![alt](assets/revisi%20config%20klien.png)
+Seharusnya pada node klien, masukkan IP utahime sebagai DNS master bukan IP gojo.
+```
+echo "nameserver 192.223.1.2" > /etc/resolv.conf
+```
