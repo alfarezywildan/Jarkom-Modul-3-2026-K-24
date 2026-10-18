@@ -39,56 +39,64 @@ Soal ini bertujuan untuk membangun fondasi konektivitas dasar seluruh topologi j
      * `eth4`: `192.223.4.1/24` (Network 4 - Data Center)
    * Mengaktifkan IP forwarding pada kernel Linux dengan perintah `sysctl -w net.ipv4.ip_forward=1`.
    * Mengonfigurasi iptables untuk melakukan Source NAT (`MASQUERADE`) pada interface keluar `eth0`.
-   * Seluruh konfigurasi ini disimpan dalam skrip `/root/nomer1_config.sh` pada node jichi.
+   * Seluruh konfigurasi ini disimpan dalam skrip `/root/nomer1_jichi.sh` pada node jichi.
 
-   Isi skrip `/root/nomer1_config.sh` pada node **jichi**:
+   Isi skrip `/root/nomer1_jichi.sh` pada node **jichi**:
    ```bash
    #!/bin/bash
-   # Konfigurasi Jaringan & NAT pada Router jichi
+   # Konfigurasi Interface Jaringan & NAT pada Router jichi
 
-   # 1. Konfigurasi IP Interface
+   echo "[*] Mengatur IP Address Interface pada jichi..."
+
+   # 1. Interface WAN terhubung ke NAT (eth0)
    ip addr add 192.168.122.20/24 dev eth0 2>/dev/null
    ip link set eth0 up
-   ip route replace default via 192.168.122.1 2>/dev/null
+   ip route replace default via 192.168.122.1
 
-   ip addr add 192.223.1.1/24 dev eth1 2>/dev/null
-   ip link set eth1 up
-   ip addr add 192.223.2.1/24 dev eth2 2>/dev/null
-   ip link set eth2 up
-   ip addr add 192.223.3.1/24 dev eth3 2>/dev/null
-   ip link set eth3 up
-   ip addr add 192.223.4.1/24 dev eth4 2>/dev/null
-   ip link set eth4 up
+   # 2. Interface LAN Internal (eth1 - eth4)
+   ip addr add 192.223.1.1/24 dev eth1 2>/dev/null && ip link set eth1 up
+   ip addr add 192.223.2.1/24 dev eth2 2>/dev/null && ip link set eth2 up
+   ip addr add 192.223.3.1/24 dev eth3 2>/dev/null && ip link set eth3 up
+   ip addr add 192.223.4.1/24 dev eth4 2>/dev/null && ip link set eth4 up
 
-   # 2. Aktifkan IPv4 Forwarding
-   sysctl -w net.ipv4.ip_forward=1
-
-   # 3. Konfigurasi Source NAT (MASQUERADE)
-   iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-
-   # 4. Atur DNS resolver jichi
+   # 3. DNS Resolver WAN
    echo "nameserver 192.168.122.1" > /etc/resolv.conf
 
-   echo "[+] Konfigurasi jichi selesai."
+   # 4. Aktifkan IP Forwarding
+   sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+
+   # 5. Konfigurasi NAT MASQUERADE untuk seluruh subnet internal
+   iptables -t nat -C POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+
+   echo "[+] Konfigurasi jichi selesai. Status Interface:"
+   ip -br a
    ```
 
 2. **Konfigurasi Host Infrastruktur (tengen)**:
    * Menetapkan alamat IP statis pada interface `eth0` sebesar `192.223.4.10/24`.
    * Menetapkan default gateway yang mengarah ke IP router jichi pada Network 4 (`192.223.4.1`).
    * Menetapkan nameserver sementara ke `192.168.122.1` untuk instalasi paket.
-   * Seluruh konfigurasi disimpan dalam skrip `/root/nomer1_config.sh` pada node tengen.
+   * Seluruh konfigurasi disimpan dalam skrip `/root/nomer1_tengen.sh` pada node tengen.
 
-   Isi skrip `/root/nomer1_config.sh` pada node **tengen**:
+   Isi skrip `/root/nomer1_tengen.sh` pada node **tengen**:
    ```bash
    #!/bin/bash
    # Konfigurasi IP Statis & Gateway pada tengen
 
+   echo "[*] Mengatur IP Address dan Default Route pada tengen..."
+
+   # 1. Interface eth0 terhubung ke switch Data Center (Network 4)
    ip addr add 192.223.4.10/24 dev eth0 2>/dev/null
    ip link set eth0 up
-   ip route replace default via 192.223.4.1 2>/dev/null
+
+   # 2. Default route melalui interface eth4 router jichi
+   ip route replace default via 192.223.4.1
+
+   # 3. DNS Resolver WAN
    echo "nameserver 192.168.122.1" > /etc/resolv.conf
 
-   echo "[+] Konfigurasi tengen selesai."
+   echo "[+] Konfigurasi tengen selesai. Status Interface:"
+   ip -br a
    ```
 
 ### Cara Melakukan Validasi
@@ -203,12 +211,9 @@ Paket *DHCP Discover* dan *DHCP Request* dari client dikirimkan menggunakan alam
    Menginstal paket `isc-dhcp-relay` pada node router jichi.
 
 2. **Eksekusi Layanan Relay**:
-   Menjalankan daemon `dhcrelay` dengan parameter interface yang menangani request dari client (`eth2`, `eth3`), interface pengirim/penerima ke arah server (`eth4`), serta alamat IP tujuan server DHCP (`192.223.4.10`):
-   ```bash
-   /usr/sbin/dhcrelay -q -i eth2 -i eth3 -i eth4 192.223.4.10
-   ```
+   Menjalankan daemon `dhcrelay` dengan parameter interface yang menangani request dari client (`eth2`, `eth3`), interface pengirim/penerima ke arah server (`eth4`), serta alamat IP tujuan server DHCP (`192.223.4.10`).
 
-3. **Pembuatan Skrip Konfigurasi**:
+3. **Pembuatan Skrip Konfigurasi Server Relay**:
    Seluruh langkah otomatisasi disimpan di `/root/nomer3_config.sh` pada node jichi.
 
    Isi skrip `/root/nomer3_config.sh` pada node **jichi**:
@@ -224,13 +229,69 @@ Paket *DHCP Discover* dan *DHCP Request* dari client dikirimkan menggunakan alam
 
    # 2. Hentikan proses lama jika ada
    killall dhcrelay 2>/dev/null
+   sleep 1
 
    # 3. Jalankan daemon dhcrelay
    /usr/sbin/dhcrelay -q -i eth2 -i eth3 -i eth4 192.223.4.10
+   sleep 1
 
    # 4. Tampilkan status proses
    ps aux | grep dhcrelay
    echo "[+] Konfigurasi DHCP Relay pada jichi selesai."
+   ```
+
+4. **Pembuatan Skrip Uji Coba Klien**:
+   Disimpan di `/root/nomer3_client_test.sh` pada masing-masing client Network 2 (`itadori`) dan Network 3 (`ino`).
+
+   Isi skrip `/root/nomer3_client_test.sh` pada node **client**:
+   ```bash
+   #!/bin/sh
+   # Uji Coba Penerimaan Lease melalui DHCP Relay
+
+   echo "=========================================================="
+   echo "[*] [1] Melepaskan Alamat IP Lama pada eth0..."
+   echo "=========================================================="
+   ip addr flush dev eth0
+
+   echo "=========================================================="
+   echo "[*] [2] Meminta Lease Baru ke DHCP Server via Relay..."
+   echo "=========================================================="
+   udhcpc -i eth0 -n -q
+   STATUS=$?
+
+   if [ $STATUS -eq 0 ]; then
+       echo "[+] Berhasil memperoleh konfigurasi DHCP melalui relay!"
+   else
+       echo "[-] Gagal memperoleh lease melalui relay (timeout)!"
+   fi
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [3] Status Alamat IP pada eth0:"
+   echo "=========================================================="
+   ip -br a show dev eth0
+   ip addr show dev eth0
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [4] Tabel Routing Default Gateway:"
+   echo "=========================================================="
+   ip route show
+
+   GW=$(ip route show default | awk '{print $3}')
+   if [ -n "$GW" ]; then
+       echo ""
+       echo "=========================================================="
+       echo "[*] [5] Uji Ping Gateway ($GW):"
+       echo "=========================================================="
+       ping -c 2 -W 2 "$GW"
+   fi
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [6] Uji Ping Internet (8.8.8.8):"
+   echo "=========================================================="
+   ping -c 2 -W 2 8.8.8.8
    ```
 
 ### Cara Melakukan Validasi
@@ -240,12 +301,12 @@ Paket *DHCP Discover* dan *DHCP Request* dari client dikirimkan menggunakan alam
    ![Proses DHCP Relay pada jichi](assets/soal3_dhcrelay_jichi.png)
 
 2. **Pembuktian Penerimaan Lease pada Client Network 2 (itadori)**:
-   * Pada node **itadori**, jalankan `udhcpc -i eth0 -n -q && ip -br a show dev eth0 && ip route show && ping -c 2 8.8.8.8`.
+   * Pada node **itadori**, jalankan `/root/nomer3_client_test.sh`.
    * Klien berhasil memperoleh lease IP `192.223.2.10` dari server `192.223.4.10`, gateway `192.223.2.1`, dan ping internet berhasil.
    ![Lease itadori Network 2 Melalui DHCP Relay](assets/soal3_itadori_relay_lease.png)
 
 3. **Pembuktian Penerimaan Lease pada Client Network 3 (ino)**:
-   * Pada node **ino**, jalankan `udhcpc -i eth0 -n -q && ip -br a show dev eth0 && ip route show && ping -c 2 8.8.8.8`.
+   * Pada node **ino**, jalankan `/root/nomer3_client_test.sh`.
    * Klien berhasil memperoleh lease IP `192.223.3.10` dari server `192.223.4.10`, gateway `192.223.3.1`, dan ping internet berhasil.
    ![Lease ino Network 3 Melalui DHCP Relay](assets/soal3_ino_relay_lease.png)
 
@@ -275,11 +336,21 @@ Soal ini menguji penerapan kebijakan pembagian IP berbasis kelompok (*classifica
    * Pool 1: Diberi izin hanya untuk `allow members of "dev-team";` dan `deny members of "support-team";` dengan range `192.223.2.10 192.223.2.35`.
    * Pool 2: Diberi izin hanya untuk `allow members of "support-team";` dan `deny members of "dev-team";` dengan range `192.223.2.70 192.223.2.95`.
 
-4. **Pembuatan Skrip Konfigurasi**:
+4. **Pembuatan Skrip Konfigurasi Server tengen**:
    Seluruh langkah otomatisasi disimpan di `/root/nomer4_config.sh` pada node tengen.
 
-   Cuplikan konfigurasi subnet Network 2 pada `/etc/dhcp/dhcpd.conf` (skrip `/root/nomer4_config.sh`):
-   ```text
+   Isi skrip `/root/nomer4_config.sh` pada node **tengen**:
+   ```bash
+   #!/bin/bash
+   # Konfigurasi DHCP Class & Dua Pool pada Network 2
+
+   cat << 'EOC' > /etc/dhcp/dhcpd.conf
+   default-lease-time 7200;
+   max-lease-time 14400;
+   ddns-update-style none;
+   authoritative;
+
+   # Definisi DHCP Class berdasarkan MAC Address Client
    class "dev-team" {
        match pick-first-value (option dhcp-client-identifier, hardware);
    }
@@ -292,24 +363,101 @@ Soal ini menguji penerapan kebijakan pembagian IP berbasis kelompok (*classifica
    subclass "support-team" 1:02:42:dc:1b:f9:00;    # zenin
    subclass "support-team" 1:02:42:a9:2a:e0:00;  # okkotsu
 
+   # Subnet Lokal Network 4 (Data Center) - Tanpa Pool Dinamis
+   subnet 192.223.4.0 netmask 255.255.255.0 {
+   }
+
+   # Scope DHCP Network 2 (Divisi A) dengan 2 Pool Terpisah
    subnet 192.223.2.0 netmask 255.255.255.0 {
        option routers 192.223.2.1;
        option subnet-mask 255.255.255.0;
        option broadcast-address 192.223.2.255;
        option domain-name-servers 192.223.1.2, 192.223.1.3;
 
+       # Pool 1: Khusus Dev Team (itadori, fushiguro)
        pool {
            allow members of "dev-team";
            deny members of "support-team";
            range 192.223.2.10 192.223.2.35;
        }
 
+       # Pool 2: Khusus Support Team (zenin, okkotsu)
        pool {
            allow members of "support-team";
            deny members of "dev-team";
            range 192.223.2.70 192.223.2.95;
        }
    }
+
+   # Scope DHCP Network 3 (Divisi B)
+   subnet 192.223.3.0 netmask 255.255.255.0 {
+       range 192.223.3.10 192.223.3.89;
+       option routers 192.223.3.1;
+       option subnet-mask 255.255.255.0;
+       option broadcast-address 192.223.3.255;
+       option domain-name-servers 192.223.1.2, 192.223.1.3;
+   }
+   EOC
+
+   echo "[*] Memvalidasi sintaks /etc/dhcp/dhcpd.conf..."
+   dhcpd -t -cf /etc/dhcp/dhcpd.conf
+   if [ $? -eq 0 ]; then
+       echo "[+] Validasi sintaks dhcpd.conf BERHASIL (Error code: 0)."
+       service isc-dhcp-server restart
+       sleep 2
+       service isc-dhcp-server status
+   else
+       echo "[-] Validasi sintaks dhcpd.conf GAGAL!"
+   fi
+
+   echo "[+] Konfigurasi Soal 4 pada tengen selesai."
+   ```
+
+5. **Pembuatan Skrip Uji Coba Klien**:
+   Disimpan di `/root/nomer4_client_test.sh` pada client Divisi A.
+
+   Isi skrip `/root/nomer4_client_test.sh` pada node **client**:
+   ```bash
+   #!/bin/sh
+   # Uji Coba Alokasi Pool DHCP Client Network 2 (Divisi A)
+
+   echo "=========================================================="
+   echo "[*] [1] Melepaskan Alamat IP Lama pada eth0..."
+   echo "=========================================================="
+   ip addr flush dev eth0
+
+   echo "=========================================================="
+   echo "[*] [2] Meminta Lease Baru dari DHCP Server..."
+   echo "=========================================================="
+   udhcpc -i eth0 -n -q
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [3] Alamat IP dan Interface yang Diperoleh:"
+   echo "=========================================================="
+   ip -br a show dev eth0
+   ip addr show dev eth0
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [4] Tabel Routing Default Gateway:"
+   echo "=========================================================="
+   ip route show
+
+   GW=$(ip route show default | awk '{print $3}')
+   if [ -n "$GW" ]; then
+       echo ""
+       echo "=========================================================="
+       echo "[*] [5] Uji Ping Gateway ($GW):"
+       echo "=========================================================="
+       ping -c 2 -W 2 "$GW"
+   fi
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [6] Uji Ping Internet (8.8.8.8):"
+   echo "=========================================================="
+   ping -c 2 -W 2 8.8.8.8
    ```
 
 ### Cara Melakukan Validasi
@@ -353,18 +501,35 @@ Soal ini bertujuan menerapkan manajemen durasi sewa (*lease time*) dan pemberian
 3. **Mendefinisikan Pool dan Durasi Lease**:
    * Pool Short Lease: Dikonfigurasi dengan `default-lease-time 1800; max-lease-time 1800;` dan rentang `192.223.3.10 192.223.3.89`.
    * Pool Long Lease: Dikonfigurasi dengan `default-lease-time 43200; max-lease-time 43200;` dan rentang `192.223.3.100 192.223.3.199`.
-   * Menambahkan parameter global subnet:
-     ```text
-     option domain-name-servers 192.223.1.2, 192.223.1.3;
-     option domain-name "K24.com";
-     option domain-search "K24.com";
-     ```
 
-4. **Pembuatan Skrip Konfigurasi**:
+4. **Pembuatan Skrip Konfigurasi Server tengen**:
    Seluruh langkah otomatisasi disimpan di `/root/nomer5_config.sh` pada node tengen.
 
-   Cuplikan konfigurasi subnet Network 3 pada `/etc/dhcp/dhcpd.conf`:
-   ```text
+   Isi skrip `/root/nomer5_config.sh` pada node **tengen**:
+   ```bash
+   #!/bin/bash
+   # Konfigurasi Short Lease & Long Lease pada Network 3
+
+   cat << 'EOC' > /etc/dhcp/dhcpd.conf
+   default-lease-time 7200;
+   max-lease-time 14400;
+   ddns-update-style none;
+   authoritative;
+
+   # Kelas DHCP Network 2 (Divisi A)
+   class "dev-team" {
+       match pick-first-value (option dhcp-client-identifier, hardware);
+   }
+   subclass "dev-team" 1:02:42:0f:8a:0e:00;    # itadori
+   subclass "dev-team" 1:02:42:b4:99:13:00;  # fushiguro
+
+   class "support-team" {
+       match pick-first-value (option dhcp-client-identifier, hardware);
+   }
+   subclass "support-team" 1:02:42:dc:1b:f9:00;    # zenin
+   subclass "support-team" 1:02:42:a9:2a:e0:00;  # okkotsu
+
+   # Kelas DHCP Network 3 (Divisi B)
    class "short-lease-team" {
        match pick-first-value (option dhcp-client-identifier, hardware);
    }
@@ -376,6 +541,33 @@ Soal ini bertujuan menerapkan manajemen durasi sewa (*lease time*) dan pemberian
    }
    subclass "long-lease-team" 1:02:42:38:9a:92:00;       # miwa
 
+   # Subnet Lokal Network 4 (Data Center)
+   subnet 192.223.4.0 netmask 255.255.255.0 {
+   }
+
+   # Scope DHCP Network 2 (Divisi A)
+   subnet 192.223.2.0 netmask 255.255.255.0 {
+       option routers 192.223.2.1;
+       option subnet-mask 255.255.255.0;
+       option broadcast-address 192.223.2.255;
+       option domain-name-servers 192.223.1.2, 192.223.1.3;
+       option domain-name "K24.com";
+       option domain-search "K24.com";
+
+       pool {
+           allow members of "dev-team";
+           deny members of "support-team";
+           range 192.223.2.10 192.223.2.35;
+       }
+
+       pool {
+           allow members of "support-team";
+           deny members of "dev-team";
+           range 192.223.2.70 192.223.2.95;
+       }
+   }
+
+   # Scope DHCP Network 3 (Divisi B) - Short & Long Lease
    subnet 192.223.3.0 netmask 255.255.255.0 {
        option routers 192.223.3.1;
        option subnet-mask 255.255.255.0;
@@ -384,6 +576,7 @@ Soal ini bertujuan menerapkan manajemen durasi sewa (*lease time*) dan pemberian
        option domain-name "K24.com";
        option domain-search "K24.com";
 
+       # Pool Short Lease: 30 menit (1800 detik) untuk ino & kusakabe
        pool {
            allow members of "short-lease-team";
            deny members of "long-lease-team";
@@ -392,6 +585,7 @@ Soal ini bertujuan menerapkan manajemen durasi sewa (*lease time*) dan pemberian
            max-lease-time 1800;
        }
 
+       # Pool Long Lease: 12 jam (43200 detik) untuk miwa
        pool {
            allow members of "long-lease-team";
            deny members of "short-lease-team";
@@ -400,6 +594,73 @@ Soal ini bertujuan menerapkan manajemen durasi sewa (*lease time*) dan pemberian
            max-lease-time 43200;
        }
    }
+   EOC
+
+   echo "[*] Memvalidasi sintaks /etc/dhcp/dhcpd.conf..."
+   dhcpd -t -cf /etc/dhcp/dhcpd.conf
+   if [ $? -eq 0 ]; then
+       echo "[+] Validasi sintaks dhcpd.conf BERHASIL."
+       service isc-dhcp-server restart
+       sleep 2
+       service isc-dhcp-server status
+   else
+       echo "[-] Validasi sintaks dhcpd.conf GAGAL!"
+   fi
+
+   echo "[+] Konfigurasi Soal 5 pada tengen selesai."
+   ```
+
+5. **Pembuatan Skrip Uji Coba Klien**:
+   Disimpan di `/root/nomer5_client_test.sh` pada client Divisi B.
+
+   Isi skrip `/root/nomer5_client_test.sh` pada node **client**:
+   ```bash
+   #!/bin/sh
+   # Uji Coba Lease Time & Opsi DHCP pada Client Network 3
+
+   echo "=========================================================="
+   echo "[*] [1] Melepaskan Alamat IP Lama pada eth0..."
+   echo "=========================================================="
+   ip addr flush dev eth0
+
+   echo "=========================================================="
+   echo "[*] [2] Meminta Lease Baru dengan Mode Verbose (Cek Lease Time)..."
+   echo "=========================================================="
+   udhcpc -i eth0 -n -q
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [3] Status Alamat IP pada eth0:"
+   echo "=========================================================="
+   ip -br a show dev eth0
+   ip addr show dev eth0
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [4] Tabel Routing Default Gateway:"
+   echo "=========================================================="
+   ip route show
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [5] Isi File /etc/resolv.conf (DNS & Domain Search):"
+   echo "=========================================================="
+   cat /etc/resolv.conf
+
+   GW=$(ip route show default | awk '{print $3}')
+   if [ -n "$GW" ]; then
+       echo ""
+       echo "=========================================================="
+       echo "[*] [6] Uji Ping Gateway ($GW):"
+       echo "=========================================================="
+       ping -c 2 -W 2 "$GW"
+   fi
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [7] Uji Ping Internet (8.8.8.8):"
+   echo "=========================================================="
+   ping -c 2 -W 2 8.8.8.8
    ```
 
 ### Cara Melakukan Validasi
@@ -443,10 +704,187 @@ Soal ini menguji konfigurasi **DHCP Static Lease** (*Reservation / Fixed Address
    }
    ```
 
-3. **Pembuatan Skrip Konfigurasi dan Uji**:
-   * Skrip konfigurasi server: disimpan di `/root/nomer6_config.sh` pada tengen.
-   * Skrip uji mandiri client: disimpan di `/root/nomer6_client_test.sh` pada kugisaki dan seluruh client.
-   * Skrip verifikasi server: disimpan di `/root/nomer6_test.sh` pada tengen.
+3. **Pembuatan Skrip Konfigurasi Server tengen**:
+   Seluruh langkah otomatisasi disimpan di `/root/nomer6_config.sh` pada node tengen.
+
+   Isi skrip `/root/nomer6_config.sh` pada node **tengen**:
+   ```bash
+   #!/bin/bash
+   # Konfigurasi DHCP Static Lease (VIP Kugisaki) pada tengen
+
+   cat << 'EOC' > /etc/dhcp/dhcpd.conf
+   default-lease-time 7200;
+   max-lease-time 14400;
+   ddns-update-style none;
+   authoritative;
+
+   # Kelas DHCP Network 2 (Divisi A)
+   class "dev-team" {
+       match pick-first-value (option dhcp-client-identifier, hardware);
+   }
+   subclass "dev-team" 1:02:42:0f:8a:0e:00;    # itadori
+   subclass "dev-team" 1:02:42:b4:99:13:00;  # fushiguro
+
+   class "support-team" {
+       match pick-first-value (option dhcp-client-identifier, hardware);
+   }
+   subclass "support-team" 1:02:42:dc:1b:f9:00;    # zenin
+   subclass "support-team" 1:02:42:a9:2a:e0:00;  # okkotsu
+
+   # Kelas DHCP Network 3 (Divisi B)
+   class "short-lease-team" {
+       match pick-first-value (option dhcp-client-identifier, hardware);
+   }
+   subclass "short-lease-team" 1:02:42:6e:c3:10:00;       # ino
+   subclass "short-lease-team" 1:02:42:cf:96:66:00;   # kusakabe
+
+   class "long-lease-team" {
+       match pick-first-value (option dhcp-client-identifier, hardware);
+   }
+   subclass "long-lease-team" 1:02:42:38:9a:92:00;       # miwa
+
+   # Subnet Lokal Network 4 (Data Center)
+   subnet 192.223.4.0 netmask 255.255.255.0 {
+   }
+
+   # Scope DHCP Network 2 (Divisi A)
+   subnet 192.223.2.0 netmask 255.255.255.0 {
+       option routers 192.223.2.1;
+       option subnet-mask 255.255.255.0;
+       option broadcast-address 192.223.2.255;
+       option domain-name-servers 192.223.1.2, 192.223.1.3;
+       option domain-name "K24.com";
+       option domain-search "K24.com";
+
+       pool {
+           allow members of "dev-team";
+           deny members of "support-team";
+           range 192.223.2.10 192.223.2.35;
+       }
+
+       pool {
+           allow members of "support-team";
+           deny members of "dev-team";
+           range 192.223.2.70 192.223.2.95;
+       }
+   }
+
+   # Scope DHCP Network 3 (Divisi B) dengan Static Lease VIP
+   subnet 192.223.3.0 netmask 255.255.255.0 {
+       option routers 192.223.3.1;
+       option subnet-mask 255.255.255.0;
+       option broadcast-address 192.223.3.255;
+       option domain-name-servers 192.223.1.2, 192.223.1.3;
+       option domain-name "K24.com";
+       option domain-search "K24.com";
+
+       # Pool Short Lease (30 menit)
+       pool {
+           allow members of "short-lease-team";
+           deny members of "long-lease-team";
+           range 192.223.3.10 192.223.3.89;
+           default-lease-time 1800;
+           max-lease-time 1800;
+       }
+
+       # Pool Long Lease (12 jam)
+       pool {
+           allow members of "long-lease-team";
+           deny members of "short-lease-team";
+           range 192.223.3.100 192.223.3.199;
+           default-lease-time 43200;
+           max-lease-time 43200;
+       }
+
+       # Static Lease Personel VIP (kugisaki) di luar seluruh pool dinamis
+       host kugisaki {
+           hardware ethernet 02:42:0b:96:7a:00;
+           fixed-address 192.223.3.99;
+       }
+   }
+   EOC
+
+   echo "[*] Memvalidasi sintaks /etc/dhcp/dhcpd.conf..."
+   dhcpd -t -cf /etc/dhcp/dhcpd.conf
+   if [ $? -eq 0 ]; then
+       echo "[+] Validasi sintaks dhcpd.conf BERHASIL."
+       service isc-dhcp-server restart
+       sleep 2
+       service isc-dhcp-server status
+   else
+       echo "[-] Validasi sintaks dhcpd.conf GAGAL!"
+   fi
+
+   echo "[*] Verifikasi blok host kugisaki:"
+   grep -A 4 "host kugisaki" /etc/dhcp/dhcpd.conf
+
+   echo "[+] Konfigurasi Soal 6 pada tengen selesai."
+   ```
+
+4. **Pembuatan Skrip Uji Coba Klien**:
+   Disimpan di `/root/nomer6_client_test.sh` pada client kugisaki dan client lainnya di Network 3.
+
+   Isi skrip `/root/nomer6_client_test.sh` pada node **client**:
+   ```bash
+   #!/bin/sh
+   # Uji Coba Static Lease (VIP kugisaki) & Uji Isolasi
+
+   HOSTNAME=$(hostname)
+   echo "=========================================================="
+   echo "[*] [1] Node: $HOSTNAME - Melepaskan IP lama pada eth0..."
+   echo "=========================================================="
+   ip addr flush dev eth0
+
+   echo "=========================================================="
+   echo "[*] [2] Menjalankan udhcpc untuk meminta lease..."
+   echo "=========================================================="
+   udhcpc -i eth0 -n -q
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [3] Status Alamat IP pada eth0:"
+   echo "=========================================================="
+   ip -br a show dev eth0
+   ip addr show dev eth0
+
+   ASSIGNED_IP=$(ip -4 addr show dev eth0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+   echo "[*] Alamat IP terdeteksi: $ASSIGNED_IP"
+
+   if [ "$HOSTNAME" = "kugisaki" ]; then
+       if [ "$ASSIGNED_IP" = "192.223.3.99" ]; then
+           echo "[+] SUKSES: kugisaki menerima Fixed VIP Address 192.223.3.99!"
+       else
+           echo "[-] PERINGATAN: kugisaki menerima $ASSIGNED_IP (Diharapkan 192.223.3.99)!"
+       fi
+   else
+       if [ "$ASSIGNED_IP" = "192.223.3.99" ]; then
+           echo "[-] PELANGGARAN: Node $HOSTNAME mendapatkan IP VIP 192.223.3.99!"
+       else
+           echo "[+] SUKSES: Node $HOSTNAME tidak mengambil IP VIP (Terisolasi Sempurna)."
+       fi
+   fi
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [4] Tabel Routing Default Gateway:"
+   echo "=========================================================="
+   ip route show
+
+   GW=$(ip route show default | awk '{print $3}')
+   if [ -n "$GW" ]; then
+       echo ""
+       echo "=========================================================="
+       echo "[*] [5] Uji Ping Gateway ($GW):"
+       echo "=========================================================="
+       ping -c 2 -W 2 "$GW"
+   fi
+
+   echo ""
+       echo "=========================================================="
+   echo "[*] [6] Uji Ping Internet (8.8.8.8):"
+   echo "=========================================================="
+   ping -c 2 -W 2 8.8.8.8
+   ```
 
 ### Cara Melakukan Validasi
 
@@ -478,10 +916,43 @@ Soal ini merupakan tahap audit, verifikasi menyeluruh, dan rekonsiliasi data alo
 
 ### Cara Mengerjakan
 
-1. **Pemeriksaan Database Lease pada tengen**:
-   Membaca dan memverifikasi isi database sewa `/var/lib/dhcp/dhcpd.leases` pada node tengen:
+1. **Pembuatan Skrip Audit Server tengen**:
+   Disimpan di `/root/nomer7_config.sh` pada node tengen.
+
+   Isi skrip `/root/nomer7_config.sh` pada node **tengen**:
    ```bash
-   cat /var/lib/dhcp/dhcpd.leases
+   #!/bin/bash
+   # Sinkronisasi dan Audit DHCP Server pada tengen
+
+   echo "=========================================================="
+   echo "[*] [1] Validasi Sintaks Konfigurasi DHCP Server"
+   echo "=========================================================="
+   dhcpd -t -cf /etc/dhcp/dhcpd.conf
+   if [ $? -eq 0 ]; then
+       echo "[+] Sintaks dhcpd.conf VALID."
+       service isc-dhcp-server restart
+       sleep 2
+       service isc-dhcp-server status
+   else
+       echo "[-] Sintaks dhcpd.conf TIDAK VALID!"
+       exit 1
+   fi
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [2] Isi Database Lease Aktif (/var/lib/dhcp/dhcpd.leases)"
+   echo "=========================================================="
+   if [ -f /var/lib/dhcp/dhcpd.leases ]; then
+       cat /var/lib/dhcp/dhcpd.leases
+   else
+       echo "[-] File /var/lib/dhcp/dhcpd.leases belum terbentuk."
+   fi
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [3] Rekapitulasi Alokasi Lease Aktif (Binding State Active)"
+   echo "=========================================================="
+   grep -E "(lease |hardware ethernet|binding state)" /var/lib/dhcp/dhcpd.leases 2>/dev/null
    ```
 
 2. **Eksekusi Pengujian Otomatis pada Seluruh Client**:
@@ -489,7 +960,7 @@ Soal ini merupakan tahap audit, verifikasi menyeluruh, dan rekonsiliasi data alo
    * Tim Divisi A: `itadori`, `fushiguro`, `zenin`, `okkotsu`
    * Tim Divisi B: `ino`, `kusakabe`, `miwa`, `kugisaki`
 
-   Isi skrip `/root/nomer7_client_test.sh`:
+   Isi skrip `/root/nomer7_client_test.sh` pada node **client**:
    ```bash
    #!/bin/sh
    # Verifikasi Konfigurasi Jaringan & Routing Lengkap
@@ -504,9 +975,14 @@ Soal ini merupakan tahap audit, verifikasi menyeluruh, dan rekonsiliasi data alo
    echo "=== [4] DNS & SEARCH ==="
    cat /etc/resolv.conf
    echo "=== [5] PING GATEWAY ==="
-   ping -c 2 $(ip route show default | awk '{print $3}')
+   GW=$(ip route show default | awk '{print $3}')
+   if [ -n "$GW" ]; then
+       ping -c 2 -W 2 "$GW"
+   else
+       echo "[-] Default Gateway tidak ditemukan!"
+   fi
    echo "=== [6] PING INTERNET ==="
-   ping -c 2 8.8.8.8
+   ping -c 2 -W 2 8.8.8.8
    ```
 
 ### Cara Melakukan Validasi
@@ -549,31 +1025,77 @@ Khusus untuk jaringan yang menggunakan DHCP Relay, paket DISCOVER dan REQUEST ya
 1. **Pemasangan `tcpdump`**:
    Memastikan utilitas `tcpdump` terpasang pada server tengen.
 
-2. **Eksekusi Penangkapan Paket**:
-   * Menjalankan `tcpdump` pada interface `eth0` server tengen dengan filter port DHCP (`port 67 or port 68`) dan menyimpan hasilnya ke file PCAP `/root/nomer8_capture.pcap`.
-   * Pada saat bersamaan, memicu request baru dari salah satu client (misal `itadori` di Network 2 atau `ino` di Network 3).
-
-3. **Pembuatan Skrip Otomatisasi**:
+2. **Pembuatan Skrip Penangkapan Paket pada tengen**:
    Seluruh prosedur disimpan di `/root/nomer8_config.sh` pada node tengen.
 
    Isi skrip `/root/nomer8_config.sh` pada node **tengen**:
    ```bash
    #!/bin/bash
-   # Packet Capture Proses DHCP DORA pada tengen
+   # Packet Capture Analisis Protokol DHCP (DORA & giaddr)
 
    PCAP_FILE="/root/nomer8_capture.pcap"
-   echo "[*] Memulai tcpdump menangkap paket DHCP..."
-   tcpdump -i eth0 -n -vvv -c 4 "port 67 or port 68" -w "$PCAP_FILE" 2>&1 &
-   TCPDUMP_PID=$!
-   sleep 1
+   COUNT="${1:-4}"
 
-   echo "[+] tcpdump aktif dengan PID: $TCPDUMP_PID. Silakan jalankan udhcpc pada client."
+   # 1. Pastikan tcpdump terpasang
+   if ! command -v tcpdump >/dev/null 2>&1; then
+       echo "[*] Menginstall tcpdump..."
+       apt-get update
+       DEBIAN_FRONTEND=noninteractive apt-get install -y tcpdump
+   fi
+
+   echo "=========================================================="
+   echo "[*] Menjalankan tcpdump pada eth0 (Filter: port 67 or 68)"
+   echo "[*] Target penangkapan: $COUNT paket DHCP..."
+   echo "[*] File capture disimpan di: $PCAP_FILE"
+   echo "=========================================================="
+   rm -f "$PCAP_FILE"
+
+   # Jalankan tcpdump untuk menangkap paket
+   tcpdump -i eth0 -n -v -c "$COUNT" -w "$PCAP_FILE" "port 67 or port 68"
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] Hasil Analisis Paket DHCP dari File PCAP:"
+   echo "=========================================================="
+   tcpdump -nr "$PCAP_FILE" -v
+
+   echo ""
+   echo "[+] Analisis Packet Capture Soal 8 Selesai."
+   ```
+
+3. **Pembuatan Skrip Request Klien**:
+   Disimpan di `/root/nomer8_client_request.sh` pada client Network 2 (`itadori`) dan Network 3 (`ino`).
+
+   Isi skrip `/root/nomer8_client_request.sh` pada node **client**:
+   ```bash
+   #!/bin/sh
+   # Memicu Request DHCP untuk Analisis Packet Capture
+
+   echo "=========================================================="
+   echo "[*] [1] Melepaskan Konfigurasi IP Lama pada eth0..."
+   echo "=========================================================="
+   ip addr flush dev eth0
+
+   echo "=========================================================="
+   echo "[*] [2] Mengirim DHCP Discover Baru via udhcpc..."
+   echo "=========================================================="
+   udhcpc -i eth0 -n -q
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [3] Konfigurasi Interface eth0 Saat Ini:"
+   echo "=========================================================="
+   ip -br a show dev eth0
+   ip addr show dev eth0
+
+   echo ""
+   echo "[+] Permintaan lease selesai. Periksa tangkapan paket di server tengen."
    ```
 
 ### Cara Melakukan Validasi
 
 1. **Penangkapan Paket DORA Network 2 (itadori)**:
-   * Memicu permintaan DHCP dari itadori dengan `/root/nomer8_client_request.sh`.
+   * Jalankan `/root/nomer8_config.sh 4` pada tengen, lalu jalankan `/root/nomer8_client_request.sh` pada itadori.
    ![Eksekusi Permintaan DHCP pada itadori](assets/soal8_itadori_request.png)
    * Hasil tangkapan tcpdump pada tengen menampilkan 4 paket lengkap (Discover, Offer, Request, ACK), dengan:
      * **`Gateway-IP (giaddr)`**: `192.223.2.1` (Interface `eth2` jichi).
@@ -582,7 +1104,7 @@ Khusus untuk jaringan yang menggunakan DHCP Relay, paket DISCOVER dan REQUEST ya
    ![Hasil tcpdump Siklus DORA Network 2](assets/soal8_tcpdump_net2.png)
 
 2. **Penangkapan Paket DORA Network 3 (ino)**:
-   * Memicu permintaan DHCP dari ino dengan `/root/nomer8_client_request.sh`.
+   * Jalankan `/root/nomer8_config.sh 4` pada tengen, lalu jalankan `/root/nomer8_client_request.sh` pada ino.
    ![Eksekusi Permintaan DHCP pada ino](assets/soal8_ino_request.png)
    * Hasil tangkapan tcpdump pada tengen menampilkan 4 paket lengkap, dengan:
      * **`Gateway-IP (giaddr)`**: `192.223.3.1` (Interface `eth3` jichi).
@@ -602,39 +1124,111 @@ Soal ini bertujuan untuk menguji keandalan sistem (*reliability test*) serta men
 
 ### Cara Mengerjakan
 
-1. **Simulasi Pemutusan Layanan (Relay Outage)**:
-   * Menghentikan proses `dhcrelay` pada router jichi dengan perintah `/root/nomer9_config.sh stop`.
-   * Pada node client (misal `itadori`), melepaskan IP lama dan mencoba meminta lease baru dengan `/root/nomer9_client_test.sh`.
-   * Mencatat gejala kegagalan yang terjadi.
-
-2. **Pemulihan Layanan (Relay Recovery)**:
-   * Menjalankan kembali daemon relay pada router jichi dengan `/root/nomer9_config.sh start`.
-   * Mengulangi permintaan DHCP pada node client.
-
-3. **Pembuatan Skrip Simulasi**:
+1. **Pembuatan Skrip Kontrol Relay pada jichi**:
    Disimpan di `/root/nomer9_config.sh` pada router jichi.
 
    Isi skrip `/root/nomer9_config.sh` pada node **jichi**:
    ```bash
    #!/bin/bash
-   # Skrip Pengujian Outage dan Recovery DHCP Relay
+   # Simulasi Gangguan & Pemulihan DHCP Relay pada jichi
 
-   ACTION=$1
+   ACTION="${1:-status}"
 
-   if [ "$ACTION" = "stop" ]; then
-       echo "[*] Menghentikan service DHCP Relay..."
-       killall dhcrelay 2>/dev/null
-       echo "[+] Status setelah dihentikan:"
-       echo "[-] dhcrelay TIDAK AKTIF (Berhasil Dihentikan)"
-   elif [ "$ACTION" = "start" ]; then
-       echo "[*] Memulihkan / Menjalankan service DHCP Relay..."
-       killall dhcrelay 2>/dev/null
-       /usr/sbin/dhcrelay -q -i eth2 -i eth3 -i eth4 192.223.4.10
-       echo "[+] Status setelah dipulihkan:"
-       ps aux | grep dhcrelay
+   case "$ACTION" in
+       stop)
+           echo "=========================================================="
+           echo "[*] Menghentikan service DHCP Relay (dhcrelay)..."
+           echo "=========================================================="
+           pkill -9 dhcrelay 2>/dev/null
+           sleep 1
+           echo "[+] Status setelah dihentikan:"
+           ps aux | grep dhcrelay | grep -v grep || echo "[-] dhcrelay TIDAK AKTIF (Berhasil Dihentikan)"
+           ;;
+       start|restore)
+           echo "=========================================================="
+           echo "[*] Memulihkan / Menjalankan service DHCP Relay..."
+           echo "=========================================================="
+           pkill -9 dhcrelay 2>/dev/null
+           sleep 1
+           /usr/sbin/dhcrelay -q -i eth2 -i eth3 -i eth4 192.223.4.10
+           sleep 1
+           echo "[+] Status setelah dipulihkan:"
+           ps aux | grep dhcrelay | grep -v grep
+           if pgrep -f "dhcrelay" >/dev/null 2>&1; then
+               echo "[+] dhcrelay BERHASIL dipulihkan dan aktif melayani eth2, eth3, eth4."
+           else
+               echo "[-] Gagal memulihkan dhcrelay!"
+           fi
+           ;;
+       status)
+           echo "=========================================================="
+           echo "[*] Status Layanan DHCP Relay Saat Ini:"
+           echo "=========================================================="
+           ps aux | grep dhcrelay | grep -v grep || echo "[-] dhcrelay TIDAK AKTIF"
+           ;;
+       *)
+           echo "Penggunaan: $0 {stop|start|restore|status}"
+           exit 1
+           ;;
+   esac
+   ```
+
+2. **Pembuatan Skrip Uji Coba Klien**:
+   Disimpan di `/root/nomer9_client_test.sh` pada client Network 2 (`itadori`) dan Network 3 (`ino`).
+
+   Isi skrip `/root/nomer9_client_test.sh` pada node **client**:
+   ```bash
+   #!/bin/sh
+   # Uji Coba Gejala Gangguan & Pemulihan pada Client
+
+   echo "=========================================================="
+   echo "=== [1] FLUSH & REQUEST LEASE ==="
+   echo "=========================================================="
+   ip addr flush dev eth0
+   udhcpc -i eth0 -n -q
+   STATUS=$?
+
+   if [ $STATUS -ne 0 ]; then
+       echo "[-] GAGAL MEMPEROLEH LEASE DARI DHCP SERVER (Relay Terputus / Outage Terkonfirmasi)"
    else
-       echo "Penggunaan: $0 {stop|start}"
+       echo "[+] BERHASIL MEMPEROLEH LEASE DARI DHCP SERVER (Relay Berfungsi / Recovery Terkonfirmasi)"
    fi
+
+   echo ""
+   echo "=========================================================="
+   echo "=== [2] STATUS ALAMAT IP ==="
+   echo "=========================================================="
+   ip -br a show dev eth0
+   ip a show dev eth0 | grep "inet " || echo "[-] Tidak ada alamat IPv4 yang terpasang."
+
+   echo ""
+   echo "=========================================================="
+   echo "=== [3] ROUTING TABLE ==="
+   echo "=========================================================="
+   ip route show
+
+   echo ""
+   echo "=========================================================="
+   echo "=== [4] DNS & SEARCH (/etc/resolv.conf) ==="
+   echo "=========================================================="
+   cat /etc/resolv.conf 2>/dev/null
+
+   echo ""
+   echo "=========================================================="
+   echo "=== [5] PING GATEWAY ==="
+   echo "=========================================================="
+   GW=$(ip route show default | awk '{print $3}')
+   if [ -n "$GW" ]; then
+       ping -c 2 -W 2 "$GW"
+   else
+       echo "[-] Ping Gateway GAGAL: default route tidak ada (Network unreachable)."
+   fi
+
+   echo ""
+   echo "=========================================================="
+   echo "=== [6] PING INTERNET ==="
+   echo "=========================================================="
+   ping -c 2 -W 2 8.8.8.8 || echo "[-] Ping Internet GAGAL: Akses keluar terputus."
    ```
 
 ### Cara Melakukan Validasi
@@ -676,18 +1270,238 @@ Pada lingkungan virtualisasi container (khususnya Docker di GNS3), proses contai
    * Membuat skrip `/root/nomer10_config.sh` yang menetapkan seluruh IP interface `eth0`-`eth4`, default route, forwarding, NAT, dan menyalakan daemon `dhcrelay`.
    * Memasang pemanggilan skrip tersebut ke dalam entry point inisialisasi Debian `/root/init.sh` dan `/etc/debinet-init.sh`, serta `/root/.bashrc`.
 
+   Isi skrip `/root/nomer10_config.sh` pada node **jichi**:
+   ```bash
+   #!/bin/bash
+   # Autostart DHCP Relay & Jaringan Pasca Restart pada jichi
+
+   echo "=========================================================="
+   echo "[*] Inisialisasi Konfigurasi Jaringan & DHCP Relay pada jichi"
+   echo "=========================================================="
+
+   # 1. Pastikan IP Address dan Gateway WAN
+   ip addr add 192.168.122.20/24 dev eth0 2>/dev/null
+   ip link set eth0 up
+   ip route replace default via 192.168.122.1 2>/dev/null
+
+   # 2. Pastikan IP Interface Internal Network 1 - 4
+   ip addr add 192.223.1.1/24 dev eth1 2>/dev/null && ip link set eth1 up
+   ip addr add 192.223.2.1/24 dev eth2 2>/dev/null && ip link set eth2 up
+   ip addr add 192.223.3.1/24 dev eth3 2>/dev/null && ip link set eth3 up
+   ip addr add 192.223.4.1/24 dev eth4 2>/dev/null && ip link set eth4 up
+
+   # 3. Aktifkan IPv4 Forwarding & NAT iptables
+   sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+   iptables -t nat -C POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+   echo "nameserver 192.168.122.1" > /etc/resolv.conf
+
+   # 4. Pastikan paket isc-dhcp-relay terpasang (Gunakan offline cache jika offline)
+   if ! command -v dhcrelay >/dev/null 2>&1; then
+       echo "[*] Menginstall isc-dhcp-relay dari cache atau repositori..."
+       dpkg -i /root/cache/*.deb 2>/dev/null || (apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y isc-dhcp-relay)
+   fi
+
+   # 5. Jalankan DHCP Relay jika belum aktif
+   if ! pgrep -f "dhcrelay" >/dev/null 2>&1; then
+       echo "[*] Menjalankan daemon dhcrelay..."
+       /usr/sbin/dhcrelay -q -i eth2 -i eth3 -i eth4 192.223.4.10
+       sleep 1
+   fi
+
+   echo "[+] Status Interface jichi:"
+   ip -br a
+   echo "[+] Status Layanan dhcrelay:"
+   ps aux | grep dhcrelay | grep -v grep
+   ```
+
 3. **Konfigurasi Autostart Server tengen**:
    * Membuat skrip `/root/nomer10_config.sh` yang menetapkan IP `192.223.4.10`, default route ke `192.223.4.1`, menulis konfigurasi lengkap `/etc/dhcp/dhcpd.conf` (seluruh scope Soal 2, 4, 5, 6), dan menyalakan service `isc-dhcp-server`.
    * Memasang pemanggilan skrip tersebut ke dalam `/root/init.sh`, `/etc/debinet-init.sh`, dan `/root/.bashrc`.
 
-4. **Pembuatan Skrip Konfigurasi Autostart**:
-   * jichi: `/root/nomer10_config.sh`
-   * tengen: `/root/nomer10_config.sh`
+   Isi skrip `/root/nomer10_config.sh` pada node **tengen**:
+   ```bash
+   #!/bin/bash
+   # Autostart DHCP Server Lengkap Pasca Restart pada tengen
 
-   Isi file `/root/init.sh` pada jichi dan tengen:
+   echo "=========================================================="
+   echo "[*] Inisialisasi Konfigurasi Jaringan & DHCP Server pada tengen"
+   echo "=========================================================="
+
+   # 1. Pastikan IP statis dan default gateway
+   ip addr add 192.223.4.10/24 dev eth0 2>/dev/null
+   ip link set eth0 up
+   ip route replace default via 192.223.4.1 2>/dev/null
+   echo "nameserver 192.168.122.1" > /etc/resolv.conf
+
+   # 2. Pastikan paket isc-dhcp-server terinstall
+   if ! command -v dhcpd >/dev/null 2>&1; then
+       echo "[*] Menginstall isc-dhcp-server dari cache atau repositori..."
+       dpkg -i /root/cache/*.deb 2>/dev/null || (apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y isc-dhcp-server)
+   fi
+
+   # 3. Konfigurasi INTERFACESv4
+   sed -i 's/^INTERFACESv4=.*/INTERFACESv4="eth0"/' /etc/default/isc-dhcp-server 2>/dev/null
+   grep -q '^INTERFACESv4=' /etc/default/isc-dhcp-server 2>/dev/null || echo 'INTERFACESv4="eth0"' >> /etc/default/isc-dhcp-server
+
+   # 4. Tulis /etc/dhcp/dhcpd.conf lengkap
+   mkdir -p /etc/dhcp
+   cat << 'EOC' > /etc/dhcp/dhcpd.conf
+   default-lease-time 7200;
+   max-lease-time 14400;
+   ddns-update-style none;
+   authoritative;
+
+   # Klasifikasi Client Network 2 (Divisi A)
+   class "dev-team" {
+       match pick-first-value (option dhcp-client-identifier, hardware);
+   }
+   subclass "dev-team" 1:02:42:0f:8a:0e:00;    # itadori
+   subclass "dev-team" 1:02:42:b4:99:13:00;  # fushiguro
+
+   class "support-team" {
+       match pick-first-value (option dhcp-client-identifier, hardware);
+   }
+   subclass "support-team" 1:02:42:dc:1b:f9:00;    # zenin
+   subclass "support-team" 1:02:42:a9:2a:e0:00;  # okkotsu
+
+   # Klasifikasi Client Network 3 (Divisi B)
+   class "short-lease-team" {
+       match pick-first-value (option dhcp-client-identifier, hardware);
+   }
+   subclass "short-lease-team" 1:02:42:6e:c3:10:00;       # ino
+   subclass "short-lease-team" 1:02:42:cf:96:66:00;   # kusakabe
+
+   class "long-lease-team" {
+       match pick-first-value (option dhcp-client-identifier, hardware);
+   }
+   subclass "long-lease-team" 1:02:42:38:9a:92:00;       # miwa
+
+   # Subnet Lokal Network 4 (Data Center)
+   subnet 192.223.4.0 netmask 255.255.255.0 {
+   }
+
+   # Subnet Network 2 (Divisi A)
+   subnet 192.223.2.0 netmask 255.255.255.0 {
+       option routers 192.223.2.1;
+       option subnet-mask 255.255.255.0;
+       option broadcast-address 192.223.2.255;
+       option domain-name-servers 192.223.1.2, 192.223.1.3;
+       option domain-name "K24.com";
+       option domain-search "K24.com";
+
+       pool {
+           allow members of "dev-team";
+           deny members of "support-team";
+           range 192.223.2.10 192.223.2.35;
+       }
+
+       pool {
+           allow members of "support-team";
+           deny members of "dev-team";
+           range 192.223.2.70 192.223.2.95;
+       }
+   }
+
+   # Subnet Network 3 (Divisi B)
+   subnet 192.223.3.0 netmask 255.255.255.0 {
+       option routers 192.223.3.1;
+       option subnet-mask 255.255.255.0;
+       option broadcast-address 192.223.3.255;
+       option domain-name-servers 192.223.1.2, 192.223.1.3;
+       option domain-name "K24.com";
+       option domain-search "K24.com";
+
+       pool {
+           allow members of "short-lease-team";
+           deny members of "long-lease-team";
+           range 192.223.3.10 192.223.3.89;
+           default-lease-time 1800;
+           max-lease-time 1800;
+       }
+
+       pool {
+           allow members of "long-lease-team";
+           deny members of "short-lease-team";
+           range 192.223.3.100 192.223.3.199;
+           default-lease-time 43200;
+           max-lease-time 43200;
+       }
+
+       host kugisaki {
+           hardware ethernet 02:42:0b:96:7a:00;
+           fixed-address 192.223.3.99;
+       }
+   }
+   EOC
+
+   # 5. Jalankan service jika belum aktif
+   if ! pgrep -f "dhcpd" >/dev/null 2>&1; then
+       echo "[*] Menjalankan service isc-dhcp-server..."
+       service isc-dhcp-server restart >/dev/null 2>&1
+       sleep 2
+   fi
+
+   echo "[+] Status Layanan dhcpd:"
+   ps aux | grep dhcpd | grep -v grep
+   ```
+
+4. **Pembuatan File Boot Hook `/root/init.sh`**:
+   Isi file `/root/init.sh` pada node **jichi** dan **tengen**:
    ```bash
    #!/bin/sh
-   /root/nomer10_config.sh
+   # Boot Hook Script
+   if [ -x /root/nomer10_config.sh ]; then
+       /root/nomer10_config.sh
+   fi
+   ```
+
+5. **Pembuatan Skrip Verifikasi Klien Pasca Restart**:
+   Disimpan di `/root/nomer10_client_verify.sh` pada seluruh client.
+
+   Isi file `/root/nomer10_client_verify.sh` pada node **client**:
+   ```bash
+   #!/bin/sh
+   # Skrip Verifikasi Pasca Restart pada Klien
+
+   echo "=========================================================="
+   echo "[*] [1] Melepaskan Konfigurasi Lama & Meminta Ulang Lease..."
+   echo "=========================================================="
+   ip addr flush dev eth0
+   udhcpc -i eth0 -n -q
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [2] Parameter Jaringan yang Diperoleh:"
+   echo "=========================================================="
+   ip -br a show dev eth0
+   ip addr show dev eth0
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [3] Tabel Routing Default Gateway:"
+   echo "=========================================================="
+   ip route show
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [4] Konfigurasi DNS Resolver (/etc/resolv.conf):"
+   echo "=========================================================="
+   cat /etc/resolv.conf
+
+   GW=$(ip route show default | awk '{print $3}')
+   if [ -n "$GW" ]; then
+       echo ""
+       echo "=========================================================="
+       echo "[*] [5] Uji Ping Gateway ($GW):"
+       echo "=========================================================="
+       ping -c 2 -W 2 "$GW"
+   fi
+
+   echo ""
+   echo "=========================================================="
+   echo "[*] [6] Uji Ping Internet (8.8.8.8):"
+   echo "=========================================================="
+   ping -c 2 -W 2 8.8.8.8
    ```
 
 ### Cara Melakukan Validasi
